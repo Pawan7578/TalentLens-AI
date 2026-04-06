@@ -13,4 +13,3 @@ aiofiles==23.2.1
 pytesseract==0.3.10
 Pillow==10.1.0
 groq==0.4.2
-psycopg2-binary
