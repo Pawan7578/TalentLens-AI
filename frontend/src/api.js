@@ -1,10 +1,23 @@
-const BASE = '/';
+// Backend API URL - supports both local dev and production
+const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
+console.log('🔌 API Base URL:', BASE_URL);
 
 function getToken() {
   return localStorage.getItem('ats_token');
 }
 
+function buildUrl(path) {
+  // If running in development (vite proxy), use relative path
+  // If running in production, use full BASE_URL
+  if (import.meta.env.DEV) {
+    return path; // Use Vite proxy
+  }
+  return `${BASE_URL}${path}`;
+}
+
 async function request(path, options = {}) {
+  const fullPath = buildUrl(path);
   const token = getToken();
   const headers = { ...(options.headers || {}) };
   if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -13,7 +26,7 @@ async function request(path, options = {}) {
     options.body = JSON.stringify(options.json);
   }
 
-  const res = await fetch(path, { ...options, headers });
+  const res = await fetch(fullPath, { ...options, headers });
   if (res.status === 401) {
     localStorage.removeItem('ats_token');
     localStorage.removeItem('ats_user');
@@ -49,7 +62,7 @@ export const api = {
   updateStatus: (id, status) => request(`/admin/submissions/${id}/status`, {
     method: 'PUT', json: { status }
   }),
-  downloadResume: (id) => `/admin/resume/${id}`,
+  downloadResume: (id) => buildUrl(`/admin/resume/${id}`),
 
   // Admin - Job Templates
   createJobTemplate: (formData) => request('/admin/job-template', {
