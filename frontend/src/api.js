@@ -1,19 +1,21 @@
 // Backend API URL - supports both local dev and production
-const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+// In development: uses Vite proxy (relative paths)  
+// In production: uses VITE_API_URL env var or defaults to Render backend URL
+const API_BASE = import.meta.env.VITE_API_URL || 'https://talentlens-backend-dnwt.onrender.com';
 
-console.log('🔌 API Base URL:', BASE_URL);
+console.log('🔌 API Base URL:', API_BASE, '| DEV mode:', import.meta.env.DEV);
 
 function getToken() {
   return localStorage.getItem('ats_token');
 }
 
 function buildUrl(path) {
-  // If running in development (vite proxy), use relative path
+  // If running in development (Vite proxy), use relative path
   // If running in production, use full BASE_URL
   if (import.meta.env.DEV) {
     return path; // Use Vite proxy
   }
-  return `${BASE_URL}${path}`;
+  return `${API_BASE}${path}`;
 }
 
 async function request(path, options = {}) {
