@@ -1,4 +1,4 @@
-const BASE = '/';
+const BASE = 'https://talentlens-backend-dnwt.onrender.com';
 
 function getToken() {
   return localStorage.getItem('ats_token');
