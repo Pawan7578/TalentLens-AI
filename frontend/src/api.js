@@ -9,6 +9,11 @@ function getToken() {
   return localStorage.getItem('ats_token');
 }
 
+function clearAuth() {
+  localStorage.removeItem('ats_token');
+  localStorage.removeItem('ats_user');
+}
+
 function buildUrl(path) {
   // If running in development (Vite proxy), use relative path
   // If running in production, use full BASE_URL
@@ -29,14 +34,11 @@ async function request(path, options = {}) {
   }
 
   const res = await fetch(fullPath, { ...options, headers });
-  if (res.status === 401) {
-    localStorage.removeItem('ats_token');
-    localStorage.removeItem('ats_user');
-    window.location.href = '/login';
-    return;
-  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
+    if (res.status === 401 && path !== '/auth/login' && path !== '/auth/signup') {
+      clearAuth();
+    }
     const errorMsg = data.detail || `HTTP ${res.status}: ${res.statusText}`;
     console.error(`API Error [${path}]:`, { status: res.status, error: errorMsg, data });
     throw new Error(errorMsg);

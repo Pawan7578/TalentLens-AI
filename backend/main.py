@@ -14,6 +14,7 @@ load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 PORT = int(os.getenv("PORT", 10000))
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "")
 
 print(f"📋 Environment: PORT={PORT}")
 print(f"📋 Frontend origin: {FRONTEND_ORIGIN}")
@@ -21,6 +22,10 @@ if DATABASE_URL:
     print(f"📋 Database URL loaded: {DATABASE_URL[:50]}...")
 else:
     print("⚠️  WARNING: DATABASE_URL not set - using SQLite fallback")
+
+for env_name in ["DATABASE_URL", "SECRET_KEY", "ALGORITHM"]:
+    if not os.getenv(env_name):
+        print(f"⚠️  WARNING: {env_name} is not set")
 
 # Import database AFTER printing logs
 try:
@@ -52,14 +57,27 @@ app = FastAPI(title="TalentLens AI", version="1.0.0")
 print(f"✅ FastAPI app initialized: {app.title} {app.version}")
 
 # CORS Configuration
+origin_set = {
+    "http://localhost:5173",
+    "https://talentlens-ai.onrender.com",
+    FRONTEND_ORIGIN,
+}
+
+for origin in CORS_ORIGINS.split(","):
+    clean_origin = origin.strip()
+    if clean_origin:
+        origin_set.add(clean_origin)
+
+allowed_origins = sorted(origin_set)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[FRONTEND_ORIGIN],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-print("✅ CORS middleware added")
+print(f"✅ CORS middleware added for origins: {allowed_origins}")
 
 # Routes
 app.include_router(user.router)
