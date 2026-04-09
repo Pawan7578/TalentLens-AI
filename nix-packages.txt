@@ -1,0 +1,9 @@
+# System packages needed for TalentLens AI deployment on Render
+# Used by Render's Nix build environment
+
+# Tesseract OCR for document image processing
+tesseract
+
+# Additional dependencies that might be needed
+# gcc
+# python311

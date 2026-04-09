@@ -5,6 +5,9 @@ services:
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    nixPackages:
+      - tesseract
+      - poppler
     envVars:
       - key: AI_PROVIDER
         value: groq

@@ -14,9 +14,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
+# ── Configure Logging ─────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.StreamHandler(sys.stderr),
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -150,6 +155,7 @@ os.makedirs("uploads", exist_ok=True)
 def seed_admin():
     """Create the admin user from env vars if it doesn't already exist."""
     try:
+        logger.info("🚀 Starting initialization...")
         db = SessionLocal()
         try:
             admin_email = (os.getenv("ADMIN_EMAIL") or "admin@company.com").strip()
@@ -157,7 +163,7 @@ def seed_admin():
             if not existing:
                 admin_password = (os.getenv("ADMIN_PASSWORD") or "").strip()
                 if not admin_password:
-                    print("⚠️  Admin seeding skipped: ADMIN_PASSWORD is not set.")
+                    logger.warning("Admin seeding skipped: ADMIN_PASSWORD is not set.")
                     return
 
                 admin_user = models.User(
@@ -168,14 +174,22 @@ def seed_admin():
                 )
                 db.add(admin_user)
                 db.commit()
-                print(f"✅ Admin seeded: {admin_email}")
+                logger.info(f"✅ Admin seeded: {admin_email}")
             else:
-                print(f"ℹ️  Admin already exists: {admin_email}")
+                logger.info(f"ℹ️  Admin already exists: {admin_email}")
         finally:
             db.close()
+        logger.info("🚀 Initialization complete - Application ready!")
     except Exception as e:
         # Non-fatal: app continues even if seeding fails
-        print(f"⚠️  Admin seeding warning: {e}")
+        logger.warning(f"Admin seeding warning: {e}", exc_info=True)
+
+
+# ── Shutdown handler ──────────────────────────────────────────────────────────
+@app.on_event("shutdown")
+def shutdown_event():
+    """Clean shutdown logging."""
+    logger.info("🛑 Application shutting down gracefully...")
 
 
 # ── Health & root ─────────────────────────────────────────────────────────────
@@ -192,7 +206,29 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "TalentLens AI Backend", "ai_provider": AI_PROVIDER}
+    try:
+        # Try to query database to ensure it's responsive
+        db = SessionLocal()
+        try:
+            db.execute("SELECT 1")
+            db.close()
+            return {
+                "status": "healthy",
+                "service": "TalentLens AI Backend",
+                "ai_provider": AI_PROVIDER,
+                "database": "connected"
+            }
+        except Exception as e:
+            logger.error(f"Database health check failed: {e}")
+            return {
+                "status": "unhealthy",
+                "service": "TalentLens AI Backend",
+                "database": "disconnected",
+                "error": str(e)
+            }, 503
+    except Exception as e:
+        logger.error(f"Health check error: {e}")
+        return {"status": "error", "error": str(e)}, 500
 
 
 print("=" * 50)
