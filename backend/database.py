@@ -5,12 +5,17 @@ Supabase requires SSL. On Render, DATABASE_URL is set as an env var.
 Locally, put it in your .env file.
 """
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
+from sqlalchemy.exc import OperationalError, DatabaseError
 from dotenv import load_dotenv
 import os
 import sys
+import logging
 from urllib.parse import urlsplit, urlunsplit
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -57,7 +62,10 @@ try:
     engine = create_engine(
         DATABASE_URL,
         pool_pre_ping=True,               # detect & discard stale connections
-        connect_args={"sslmode": "require"},  # required for Supabase
+        connect_args={
+            "sslmode": "require",         # required for Supabase
+            "connect_timeout": 10,        # connection timeout in seconds
+        },
         pool_recycle=3600,                # recycle connections every hour
         pool_size=5,
         max_overflow=10,
@@ -87,3 +95,32 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10),
+    reraise=True
+)
+def test_database_connection():
+    """Test database connection with retry logic.
+    
+    Retries up to 3 times with exponential backoff:
+    - 1st attempt: immediate
+    - 2nd attempt: 4-8 seconds
+    - 3rd attempt: 8-16 seconds
+    """
+    try:
+        db = SessionLocal()
+        try:
+            result = db.execute(text("SELECT 1"))
+            logger.info("✅ Database connection test successful")
+            return True
+        finally:
+            db.close()
+    except (OperationalError, DatabaseError) as e:
+        logger.warning(f"Database connection attempt failed: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected database error: {e}")
+        raise

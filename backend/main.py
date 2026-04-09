@@ -72,7 +72,7 @@ print(f"📋 PORT={PORT}  |  AI_PROVIDER={AI_PROVIDER}")
 
 # ── Import database (exits if DATABASE_URL missing/invalid) ───────────────────
 try:
-    from database import engine, SessionLocal
+    from database import engine, SessionLocal, test_database_connection
     print("✅ Database module loaded")
 except SystemExit:
     raise
@@ -150,12 +150,25 @@ print("✅ All routes registered")
 os.makedirs("uploads", exist_ok=True)
 
 
-# ── Startup: seed admin ───────────────────────────────────────────────────────
+# ── Startup: test db connection and seed admin ───────────────────────────────
 @app.on_event("startup")
 def seed_admin():
-    """Create the admin user from env vars if it doesn't already exist."""
+    """Test database connection with retries, then create admin user if needed."""
     try:
         logger.info("🚀 Starting initialization...")
+        
+        # Test database connection with retry logic
+        logger.info("📡 Testing database connection (with retries)...")
+        try:
+            test_database_connection()
+            logger.info("✅ Database ready!")
+        except Exception as e:
+            logger.error(f"❌ Database connection failed after retries: {e}")
+            logger.warning("⚠️  Continuing anyway — app may have limited functionality")
+            # Don't exit — let app run in degraded mode
+        
+        # Proceed with admin seeding
+        logger.info("👤 Checking admin user...")
         db = SessionLocal()
         try:
             admin_email = (os.getenv("ADMIN_EMAIL") or "admin@company.com").strip()
@@ -207,28 +220,23 @@ def root():
 @app.get("/health")
 def health():
     try:
-        # Try to query database to ensure it's responsive
-        db = SessionLocal()
-        try:
-            db.execute("SELECT 1")
-            db.close()
-            return {
-                "status": "healthy",
-                "service": "TalentLens AI Backend",
-                "ai_provider": AI_PROVIDER,
-                "database": "connected"
-            }
-        except Exception as e:
-            logger.error(f"Database health check failed: {e}")
-            return {
-                "status": "unhealthy",
-                "service": "TalentLens AI Backend",
-                "database": "disconnected",
-                "error": str(e)
-            }, 503
+        # Try health check with the test function
+        test_database_connection()
+        return {
+            "status": "healthy",
+            "service": "TalentLens AI Backend",
+            "ai_provider": AI_PROVIDER,
+            "database": "connected"
+        }
     except Exception as e:
-        logger.error(f"Health check error: {e}")
-        return {"status": "error", "error": str(e)}, 500
+        logger.error(f"Health check failed: {e}")
+        return {
+            "status": "unhealthy",
+            "service": "TalentLens AI Backend",
+            "ai_provider": AI_PROVIDER,
+            "database": "disconnected",
+            "error": str(e)
+        }, 503
 
 
 print("=" * 50)
