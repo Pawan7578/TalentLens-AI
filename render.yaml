@@ -13,10 +13,20 @@ services:
       - key: GROQ_MODEL
         value: llama3-8b-8192
       - key: FRONTEND_URL
-        sync: false
+        value: https://talentlens-ai.onrender.com
       - key: ALLOW_LOCALHOST_CORS
         value: false
       - key: NODE_ENV
         value: production
       - key: RENDER
         value: true
+
+  - type: web
+    name: talentlens-frontend
+    env: node
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    startCommand: npm run preview
+    envVars:
+      - key: VITE_API_URL
+        value: https://talentlens-backend-dnwt.onrender.com
