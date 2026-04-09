@@ -118,25 +118,40 @@ _allow_localhost = os.getenv(
 # FastAPI's CORSMiddleware supports allow_origin_regex for this.
 LOCALHOST_REGEX = r"^https?://localhost(:\d+)?$"
 
-_explicit_origins = [
-    _frontend_url,
-    *_extra,
-]
+_explicit_origins = [_frontend_url] + _extra if _frontend_url else _extra
 _explicit_origins = [origin for origin in _explicit_origins if origin]
+
+# Additional localhost origins for development
+if _allow_localhost:
+    _explicit_origins.extend([
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:10000",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:10000",
+    ])
+
+# Remove duplicates
+_explicit_origins = list(set(o for o in _explicit_origins if o))
+
+logger.info(f"🔐 Configuring CORS with {len(_explicit_origins)} explicit origins")
+for origin in _explicit_origins:
+    logger.info(f"   ✓ {origin}")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_explicit_origins,
     allow_origin_regex=LOCALHOST_REGEX if _allow_localhost else None,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
 )
 print(
     "✅ CORS configured "
     f"(frontend_url={_frontend_url or 'unset'}, "
     f"localhost_regex={'enabled' if _allow_localhost else 'disabled'}, "
-    f"extra={_extra})"
+    f"explicit_origins={len(_explicit_origins)})"
 )
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -243,6 +258,10 @@ print("=" * 50)
 print("✅ TalentLens AI backend ready")
 print(f"🌐 Docs: http://0.0.0.0:{PORT}/docs")
 print(f"🌐 Health: http://0.0.0.0:{PORT}/health")
+print(f"🔐 CORS configured for: {_frontend_url or 'localhost only'}")
+if _allow_localhost:
+    print(f"   (local development ports: 3000, 5173, 10000)")
+print("=" * 50)
 print("=" * 50)
 
 

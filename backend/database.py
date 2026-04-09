@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 import os
 import sys
 import logging
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit, urlparse, parse_qs, urlencode, urlunparse
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,33 @@ if "sqlite" in DATABASE_URL.lower():
 # SQLAlchemy 1.4+ requires the "postgresql://" scheme.
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+# Clean pgbouncer parameter which psycopg2 doesn't understand
+# Supabase's transaction pooler adds ?pgbouncer=true which causes "invalid connection option" error
+def _clean_database_url(url: str) -> str:
+    """Remove unsupported connection parameters from the database URL."""
+    try:
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query, keep_blank_values=True)
+        
+        # Remove pgbouncer parameter - psycopg2 doesn't support it
+        if "pgbouncer" in params:
+            logger.info("ℹ️  Removing unsupported pgbouncer parameter from DATABASE_URL")
+            params.pop("pgbouncer", None)
+        
+        # Reconstruct URL without the problematic parameters
+        clean_query = urlencode({k: v[0] for k, v in params.items()}, doseq=False)
+        clean_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, clean_query, parsed.fragment))
+        
+        if clean_url != url:
+            logger.info(f"📝 Cleaned DATABASE_URL (removed incompatible parameters)")
+        
+        return clean_url
+    except Exception as e:
+        logger.warning(f"⚠️  Could not clean DATABASE_URL: {e}")
+        return url
+
+DATABASE_URL = _clean_database_url(DATABASE_URL)
 
 
 def _redact_database_url(raw_url: str) -> str:
