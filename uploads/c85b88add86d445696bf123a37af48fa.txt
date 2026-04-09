@@ -1,0 +1,3 @@
+﻿ML Software Engineer - 8 years
+Skills: Python, JavaScript, React, FastAPI, PostgreSQL, Docker, Kubernetes, AWS
+Built RAG systems with LLMs, computer vision models with PyTorch

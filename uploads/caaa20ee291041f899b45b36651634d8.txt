@@ -1,0 +1,4 @@
+﻿Senior Machine Learning Engineer - 7 years
+Skills: Python, PyTorch, TensorFlow, HuggingFace, RAG, LLM, FastAPI, Docker, AWS
+Experience: Built LLM applications, Deep Learning models, NLP systems
+Projects: RAG pipeline, Transformer models, Production ML deployment

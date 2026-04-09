@@ -7,18 +7,23 @@ import schemas
 import auth
 import os
 import logging
-import uuid
-from services.email_service import send_selected_email, send_rejected_email
+import asyncio
+from services.email_service import send_selected_email, send_rejected_email, send_selected_email_bulk, send_rejected_email_bulk
 from services.file_parser import extract_text
 import aiofiles
+from pydantic import BaseModel
+from typing import List
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-UPLOAD_DIR = "uploads"
+# Absolute path — same fix as routes/analyze.py
+UPLOAD_DIR = os.path.abspath(os.getenv("UPLOAD_DIR", "uploads"))
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+
+# ── Submissions ───────────────────────────────────────────────────────────────
 
 @router.get("/submissions", response_model=list[schemas.AdminSubmissionOut])
 def list_all_submissions(
@@ -31,9 +36,8 @@ def list_all_submissions(
         .order_by(models.Submission.created_at.desc())
         .all()
     )
-    result = []
-    for s in submissions:
-        result.append(schemas.AdminSubmissionOut(
+    return [
+        schemas.AdminSubmissionOut(
             id=s.id,
             user_id=s.user_id,
             user_name=s.user.name,
@@ -51,10 +55,11 @@ def list_all_submissions(
             feedback=s.feedback,
             status=s.status,
             email_sent=s.email_sent,
-            llm_provider=s.llm_provider or "ollama",
+            llm_provider=s.llm_provider or "unknown",
             created_at=s.created_at,
-        ))
-    return result
+        )
+        for s in submissions
+    ]
 
 
 @router.put("/submissions/{submission_id}/status")
@@ -64,7 +69,9 @@ def update_status(
     db: Session = Depends(get_db),
     _: models.User = Depends(auth.require_admin),
 ):
-    submission = db.query(models.Submission).filter(models.Submission.id == submission_id).first()
+    submission = db.query(models.Submission).filter(
+        models.Submission.id == submission_id
+    ).first()
     if not submission:
         raise HTTPException(status_code=404, detail="Submission not found")
     if submission.email_sent:
@@ -74,7 +81,6 @@ def update_status(
 
     submission.status = update.status
 
-    # Send email
     user = db.query(models.User).filter(models.User.id == submission.user_id).first()
     try:
         if update.status == "selected":
@@ -83,11 +89,13 @@ def update_status(
             send_rejected_email(user.email, user.name)
         submission.email_sent = True
     except Exception as e:
-        # Don't block status update if email fails — log and continue
-        print(f"Email send failed: {e}")
+        logger.warning(f"Email send failed (status still updated): {e}")
 
     db.commit()
-    return {"message": f"Submission marked as {update.status}", "email_sent": submission.email_sent}
+    return {
+        "message": f"Submission marked as {update.status}",
+        "email_sent": submission.email_sent,
+    }
 
 
 @router.get("/resume/{submission_id}")
@@ -96,17 +104,85 @@ def download_resume(
     db: Session = Depends(get_db),
     _: models.User = Depends(auth.require_admin),
 ):
-    submission = db.query(models.Submission).filter(models.Submission.id == submission_id).first()
+    submission = db.query(models.Submission).filter(
+        models.Submission.id == submission_id
+    ).first()
     if not submission:
         raise HTTPException(status_code=404, detail="Submission not found")
+
     file_path = os.path.join(UPLOAD_DIR, submission.resume_filename)
     if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="Resume file not found")
+        raise HTTPException(status_code=404, detail="Resume file not found on server")
+
     return FileResponse(file_path, filename=submission.resume_filename)
 
 
-# ── JOB TEMPLATE MANAGEMENT ──────────────────────────────────────────────────
+# ── Bulk Email ────────────────────────────────────────────────────────────────
 
+class BulkEmailCandidate(BaseModel):
+    id: int
+    name: str
+    email: str
+    score: float
+
+class BulkEmailRequest(BaseModel):
+    candidates: List[BulkEmailCandidate]
+    email_type: str  # "selected" or "rejected"
+
+@router.post("/bulk-email")
+async def bulk_email(
+    request: BulkEmailRequest,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.require_admin),
+):
+    """
+    Send bulk selection or rejection emails to multiple candidates.
+    - candidates: List of candidates {id, name, email, score}
+    - email_type: "selected" or "rejected"
+    """
+    if not request.candidates:
+        raise HTTPException(status_code=400, detail="No candidates provided")
+    
+    if request.email_type not in ("selected", "rejected"):
+        raise HTTPException(status_code=400, detail="email_type must be 'selected' or 'rejected'")
+    
+    emails = [c.email for c in request.candidates]
+    names = [c.name for c in request.candidates]
+    
+    try:
+        # Send bulk emails with automatic delays
+        if request.email_type == "selected":
+            result = send_selected_email_bulk(emails, names)
+        else:
+            result = send_rejected_email_bulk(emails, names)
+        
+        # Update submission records
+        for candidate in request.candidates:
+            submission = db.query(models.Submission).filter(
+                models.Submission.id == candidate.id
+            ).first()
+            if submission:
+                submission.status = request.email_type
+                submission.email_sent = True
+        
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": f"Bulk email sent successfully",
+            "sent": result['success_count'],
+            "failed": result['failure_count'],
+            "total": result['total'],
+            "details": result,
+        }
+    
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Bulk email error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to send bulk emails: {str(e)}")
+
+
+# ── Job Templates ─────────────────────────────────────────────────────────────
 
 @router.post("/job-template", response_model=schemas.JobTemplateOut)
 async def create_job_template(
@@ -117,57 +193,42 @@ async def create_job_template(
     _: models.User = Depends(auth.require_admin),
 ):
     """
-    Create a new job template by uploading:
-    - job_role: The job title (e.g., "Senior Python Developer")
-    - description: Full job description
-    - reference_resume: Reference resume file (pdf/docx/txt) - OPTIONAL
+    Create a new job template.
+    - job_role:         Job title (e.g. "Senior Python Developer")
+    - description:      Full job description text
+    - reference_resume: Optional reference resume file (pdf / docx / txt)
     """
     logger.info(f"Creating job template: {job_role}")
-    print(f"DEBUG - ROLE: {job_role}")
-    print(f"DEBUG - DESC: {description[:50]}...")
-    print(f"DEBUG - FILE: {reference_resume}")
 
-    # Validate inputs
     if not job_role or len(job_role.strip()) < 2:
         raise HTTPException(status_code=400, detail="Job role is required (min 2 chars)")
-
     if not description or len(description.strip()) < 10:
         raise HTTPException(status_code=400, detail="Description is required (min 10 chars)")
 
     # Extract reference resume text (optional)
-    resume_text = ""
+    resume_text = "[No reference resume provided]"
     if reference_resume:
         try:
             resume_bytes = await reference_resume.read()
             if len(resume_bytes) == 0:
                 raise ValueError("Reference resume file is empty")
-
-            logger.info(f"Extracting text from reference resume: {reference_resume.filename}")
-            resume_text = extract_text(reference_resume.filename, resume_bytes)
-
-            if not resume_text or len(resume_text.strip()) < 10:
-                logger.warning("Extracted resume text < 10 chars, using default")
-                resume_text = "[Reference resume provided but could not extract text]"
-
+            extracted = extract_text(reference_resume.filename, resume_bytes)
+            resume_text = extracted if extracted and len(extracted.strip()) >= 10 else \
+                "[Reference resume provided but text could not be extracted]"
             logger.info(f"Reference resume extracted: {len(resume_text)} chars")
         except ValueError as e:
-            logger.error(f"Resume extraction failed: {e}")
             raise HTTPException(status_code=400, detail=f"Resume parsing error: {str(e)}")
-    else:
-        logger.info("No reference resume provided (optional)")
-        resume_text = "[No reference resume provided]"
 
-    # Check for duplicate job role
+    # Prevent duplicate job roles (case-insensitive)
     existing = db.query(models.JobTemplate).filter(
-        models.JobTemplate.job_role.ilike(job_role)
+        models.JobTemplate.job_role.ilike(job_role.strip())
     ).first()
     if existing:
         raise HTTPException(
             status_code=409,
-            detail=f"Job template '{job_role}' already exists"
+            detail=f"Job template '{job_role}' already exists",
         )
 
-    # Create template
     template = models.JobTemplate(
         job_role=job_role.strip(),
         description=description.strip(),
@@ -177,7 +238,7 @@ async def create_job_template(
     db.commit()
     db.refresh(template)
 
-    logger.info(f"Job template created: ID={template.id}, Role={job_role}")
+    logger.info(f"Job template created: ID={template.id}, Role={template.job_role}")
     return template
 
 
@@ -186,11 +247,11 @@ def list_job_templates(
     db: Session = Depends(get_db),
     _: models.User = Depends(auth.require_admin),
 ):
-    """List all job templates (admin only)."""
-    templates = db.query(models.JobTemplate).order_by(
-        models.JobTemplate.created_at.desc()
-    ).all()
-    return templates
+    return (
+        db.query(models.JobTemplate)
+        .order_by(models.JobTemplate.created_at.desc())
+        .all()
+    )
 
 
 @router.get("/job-templates/{template_id}", response_model=schemas.JobTemplateOut)
@@ -199,7 +260,6 @@ def get_job_template_detail(
     db: Session = Depends(get_db),
     _: models.User = Depends(auth.require_admin),
 ):
-    """Get detailed job template (admin only)."""
     template = db.query(models.JobTemplate).filter(
         models.JobTemplate.id == template_id
     ).first()
@@ -214,26 +274,39 @@ def delete_job_template(
     db: Session = Depends(get_db),
     _: models.User = Depends(auth.require_admin),
 ):
-    """Delete a job template (admin only)."""
     template = db.query(models.JobTemplate).filter(
         models.JobTemplate.id == template_id
     ).first()
     if not template:
         raise HTTPException(status_code=404, detail="Job template not found")
 
-    # Check for submissions using this template
     submission_count = db.query(models.Submission).filter(
         models.Submission.job_template_id == template_id
     ).count()
-
     if submission_count > 0:
         raise HTTPException(
             status_code=409,
-            detail=f"Cannot delete template with {submission_count} submissions"
+            detail=f"Cannot delete template: {submission_count} submission(s) reference it",
         )
 
     db.delete(template)
     db.commit()
-
     logger.info(f"Job template deleted: ID={template_id}")
     return {"message": "Job template deleted successfully"}
+
+
+# ── SMTP diagnostic endpoint ──────────────────────────────────────────────────
+
+@router.get("/smtp-check")
+def smtp_check(
+    _: models.User = Depends(auth.require_admin),
+):
+    """
+    Admin-only: verify SMTP config is working without sending a real email.
+    Hit GET /admin/smtp-check after deployment to confirm email is ready.
+    """
+    from services.email_service import verify_smtp_config
+    result = verify_smtp_config()
+    status_code = 200 if result.get("auth_ok") else 503
+    from fastapi.responses import JSONResponse
+    return JSONResponse(content=result, status_code=status_code)

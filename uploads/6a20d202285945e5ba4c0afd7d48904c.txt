@@ -1,0 +1,5 @@
+﻿Senior ML Engineer with 8+ years experience.
+Expert in: Python, FastAPI, Machine Learning, NLP, SQL, Docker, Kubernetes, AWS, REST APIs.
+Built production ML models with PyTorch and TensorFlow.
+Strong DevOps experience with CI/CD pipelines.
+Full-stack development experience with React and Node.js.

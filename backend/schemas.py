@@ -15,12 +15,38 @@ class UserLogin(BaseModel):
     password: str
 
 
+class LoginRequest(BaseModel):
+    email: Optional[str] = None
+    password: Optional[str] = None
+
+
+class LoginUser(BaseModel):
+    id: str
+    email: EmailStr
+    name: str
+
+
 class Token(BaseModel):
+    token: str
     access_token: str
+    refresh_token: Optional[str] = None
     token_type: str
     role: str
     name: str
     id: int
+    user: LoginUser
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: Optional[str] = None
+    refreshToken: Optional[str] = None
+
+
+class RefreshTokenResponse(BaseModel):
+    token: str
+    access_token: str
+    refresh_token: str
+    token_type: str
 
 
 class UserOut(BaseModel):
@@ -145,15 +171,24 @@ class StatusUpdate(BaseModel):
 
 
 class AnalyzeResponse(BaseModel):
-    submission_id: int
-    ats_score: float
-    skill_match: float
-    education_match: float
-    experience_match: float
+    final_score: float
+    keyword_score: float
+    ai_score: float
+    matched_skills: List[str]
     missing_skills: List[str]
-    education_gap: str
-    experience_gap: str
-    feedback: str
+    cleaned_skills: Optional[List[str]] = None
+    suggestions: List[str]
+    ai_unavailable: bool = False
+
+    # Compatibility fields for existing frontend/admin views.
+    submission_id: Optional[int] = None
+    ats_score: Optional[float] = None
+    skill_match: Optional[float] = None
+    education_match: Optional[float] = None
+    experience_match: Optional[float] = None
+    education_gap: Optional[str] = None
+    experience_gap: Optional[str] = None
+    feedback: Optional[str] = None
 
 
 class AnalyzeResponseUser(BaseModel):

@@ -47,7 +47,7 @@ class Submission(Base):
     feedback = Column(Text, default="")
     status = Column(String, default="pending")  # pending / selected / rejected
     email_sent = Column(Boolean, default=False)
-    llm_provider = Column(String, default="ollama")
+    llm_provider = Column(String, default="groq")
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="submissions")

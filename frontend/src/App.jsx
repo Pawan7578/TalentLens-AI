@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { RouterProvider, createBrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
@@ -37,19 +37,33 @@ function PublicRoute({ children }) {
   return children;
 }
 
+function AppRoutes() {
+  return (
+    <Routes>
+      <Route path="/" element={<Navigate to="/login" replace />} />
+      <Route path="/login"  element={<PublicRoute><Login /></PublicRoute>} />
+      <Route path="/signup" element={<PublicRoute><Signup /></PublicRoute>} />
+      <Route path="/dashboard" element={<PrivateRoute><UserDashboard /></PrivateRoute>} />
+      <Route path="/admin"     element={<PrivateRoute adminOnly><AdminPanel /></PrivateRoute>} />
+      <Route path="*" element={<Navigate to="/login" replace />} />
+    </Routes>
+  );
+}
+
+const router = createBrowserRouter(
+  [{ path: '*', element: <AppRoutes /> }],
+  {
+    future: {
+      v7_relativeSplatPath: true,  // Opt into v7 behavior early
+      v7_startTransition: true,    // Use startTransition for state updates
+    },
+  }
+);
+
 export default function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Navigate to="/login" replace />} />
-          <Route path="/login"  element={<PublicRoute><Login /></PublicRoute>} />
-          <Route path="/signup" element={<PublicRoute><Signup /></PublicRoute>} />
-          <Route path="/dashboard" element={<PrivateRoute><UserDashboard /></PrivateRoute>} />
-          <Route path="/admin"     element={<PrivateRoute adminOnly><AdminPanel /></PrivateRoute>} />
-          <Route path="*" element={<Navigate to="/login" replace />} />
-        </Routes>
-      </BrowserRouter>
+      <RouterProvider router={router} />
     </AuthProvider>
   );
 }

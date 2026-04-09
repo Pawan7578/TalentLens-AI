@@ -1,2 +1,5 @@
-# This file is intentionally left empty.
-# It marks the routes/ directory as a Python package.
+"""Route module exports."""
+
+from . import admin, analyze, health, user
+
+__all__ = ["admin", "analyze", "health", "user"]

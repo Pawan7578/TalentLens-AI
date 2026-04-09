@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { api } from '../api';
+import { preparePassword, getPasswordByteLength } from '../utils/passwordHash';
 
 export default function Signup() {
   const { login } = useAuth();
@@ -9,8 +10,17 @@ export default function Signup() {
   const [form, setForm] = useState({ name: '', email: '', password: '' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [passwordLength, setPasswordLength] = useState(0);
 
-  const handle = (e) => setForm(f => ({ ...f, [e.target.name]: e.target.value }));
+  const handle = (e) => {
+    const { name, value } = e.target;
+    setForm(f => ({ ...f, [name]: value }));
+    
+    // Track password byte length for display
+    if (name === 'password') {
+      setPasswordLength(getPasswordByteLength(value));
+    }
+  };
 
   const submit = async (e) => {
     e.preventDefault();
@@ -18,9 +28,12 @@ export default function Signup() {
     if (form.password.length < 6) { setError('Password must be at least 6 characters'); return; }
     setLoading(true);
     try {
-      await api.signup(form);
-      // Auto-login
-      const data = await api.login({ email: form.email, password: form.password });
+      // Prepare password (hashes if > 72 bytes)
+      const preparedPassword = await preparePassword(form.password);
+      
+      await api.signup({ ...form, password: preparedPassword });
+      // Auto-login with prepared password
+      const data = await api.login({ email: form.email, password: preparedPassword });
       login(data);
       navigate('/dashboard');
     } catch (err) {
@@ -64,6 +77,11 @@ export default function Signup() {
             <div>
               <label className="label">Password</label>
               <input name="password" type="password" required className="input-field" placeholder="Min. 6 characters" value={form.password} onChange={handle} />
+              {passwordLength > 72 && (
+                <div className="text-xs mt-2 px-3 py-2 rounded-lg" style={{ background: 'rgba(249, 115, 22, 0.1)', color: '#ea580c', border: '1px solid rgba(249, 115, 22, 0.2)' }}>
+                  Password will be hashed automatically ({passwordLength} bytes → 72 bytes)
+                </div>
+              )}
             </div>
 
             {error && (

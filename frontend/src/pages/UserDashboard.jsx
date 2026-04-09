@@ -230,7 +230,25 @@ export default function UserDashboard() {
 
           {/* Right — Result */}
           <div>
-            {result ? (
+            {loading ? (
+              <div className="card h-full min-h-64 animate-pulse">
+                <div className="h-4 w-40 rounded mb-6" style={{ background: 'rgba(255,255,255,0.08)' }} />
+                <div className="h-40 w-40 rounded-full mx-auto mb-8" style={{ background: 'rgba(255,255,255,0.06)' }} />
+                <div className="space-y-3">
+                  <div className="h-3 rounded" style={{ background: 'rgba(255,255,255,0.08)' }} />
+                  <div className="h-3 rounded w-11/12" style={{ background: 'rgba(255,255,255,0.08)' }} />
+                  <div className="h-3 rounded w-10/12" style={{ background: 'rgba(255,255,255,0.08)' }} />
+                </div>
+              </div>
+            ) : error ? (
+              <div className="card h-full min-h-64 flex flex-col items-center justify-center text-center px-6">
+                <div className="w-10 h-10 rounded-full mb-4 flex items-center justify-center" style={{ background: 'rgba(239,68,68,0.12)', color: '#ef4444' }}>
+                  !
+                </div>
+                <p className="font-semibold mb-2" style={{ color: '#ef4444' }}>Analysis failed</p>
+                <p className="text-sm" style={{ color: 'var(--text-subtle)' }}>{error}</p>
+              </div>
+            ) : result ? (
               user?.role === 'admin' ? (
                 <AdminAnalysisCard result={result} />
               ) : (

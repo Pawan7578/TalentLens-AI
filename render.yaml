@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: talentlens-backend
+    env: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: AI_PROVIDER
+        value: groq
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: llama3-8b-8192
+      - key: FRONTEND_URL
+        sync: false
+      - key: ALLOW_LOCALHOST_CORS
+        value: false
+      - key: NODE_ENV
+        value: production
+      - key: RENDER
+        value: true

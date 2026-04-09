@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import React, { useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 
 function ScoreBadge({ score }) {
@@ -48,7 +48,7 @@ export default function HistoryTable({ submissions }) {
             {submissions.map(sub => {
               const skills = (() => { try { return JSON.parse(sub.missing_skills); } catch { return []; } })();
               return (
-                <>
+                <React.Fragment key={sub.id}>
                   <tr key={sub.id}>
                     <td className="px-5 py-3 font-mono text-xs" style={{ color: 'var(--text-muted)' }}>
                       {new Date(sub.created_at).toLocaleDateString()}
@@ -123,7 +123,7 @@ export default function HistoryTable({ submissions }) {
                       </td>
                     </tr>
                   )}
-                </>
+                </React.Fragment>
               );
             })}
           </tbody>

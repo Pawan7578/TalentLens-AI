@@ -1,0 +1,1 @@
+﻿Built dashboards for hospital operations and patient care using SQL and Python.

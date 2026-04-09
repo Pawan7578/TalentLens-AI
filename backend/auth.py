@@ -1,7 +1,8 @@
 from datetime import datetime, timedelta
 from typing import Optional
+import hashlib
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
@@ -12,23 +13,49 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-SECRET_KEY = os.getenv("SECRET_KEY")
+JWT_SECRET = os.getenv("JWT_SECRET") or os.getenv("SECRET_KEY")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
+REFRESH_TOKEN_EXPIRE_MINUTES = int(os.getenv("REFRESH_TOKEN_EXPIRE_MINUTES", "10080"))
+MAX_BCRYPT_BYTES = 72
 
-if not SECRET_KEY:
-    raise RuntimeError("SECRET_KEY environment variable is required")
+try:
+    BCRYPT_ROUNDS = int(os.getenv("BCRYPT_ROUNDS", "10"))
+except ValueError:
+    BCRYPT_ROUNDS = 10
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+if not JWT_SECRET:
+    raise RuntimeError("JWT_SECRET (or SECRET_KEY for backward compatibility) is required")
+
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 
+def prepare_password_for_bcrypt(password: str) -> bytes:
+    """Prepare a password so bcrypt never receives more than 72 bytes."""
+    if not isinstance(password, str):
+        raise ValueError("Password must be a string")
+
+    password_bytes = password.encode("utf-8")
+    if len(password_bytes) <= MAX_BCRYPT_BYTES:
+        return password_bytes
+
+    # For long passwords, hash first to fixed-length hex then clamp to 72 bytes.
+    sha256_hex = hashlib.sha256(password_bytes).hexdigest()
+    return sha256_hex[:MAX_BCRYPT_BYTES].encode("utf-8")
+
+
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    prepared = prepare_password_for_bcrypt(password)
+    salt = bcrypt.gensalt(rounds=BCRYPT_ROUNDS)
+    return bcrypt.hashpw(prepared, salt).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    try:
+        prepared = prepare_password_for_bcrypt(plain)
+        return bcrypt.checkpw(prepared, hashed.encode("utf-8"))
+    except (TypeError, ValueError):
+        return False
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
@@ -36,8 +63,17 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     if "sub" in to_encode:
         to_encode["sub"] = str(to_encode["sub"])
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    to_encode.update({"exp": expire, "token_type": "access"})
+    return jwt.encode(to_encode, JWT_SECRET, algorithm=ALGORITHM)
+
+
+def create_refresh_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if "sub" in to_encode:
+        to_encode["sub"] = str(to_encode["sub"])
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=REFRESH_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire, "token_type": "refresh"})
+    return jwt.encode(to_encode, JWT_SECRET, algorithm=ALGORITHM)
 
 
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
@@ -47,7 +83,10 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[ALGORITHM])
+        if payload.get("token_type") == "refresh":
+            raise credentials_exception
+
         subject = payload.get("sub")
         if subject is None:
             raise credentials_exception

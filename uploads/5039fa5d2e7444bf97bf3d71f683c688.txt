@@ -1,0 +1,11 @@
+﻿Senior ML Engineer with 10+ years experience.
+
+Skills: Python, FastAPI, Machine Learning, NLP (Natural Language Processing), PyTorch, TensorFlow, Docker, Kubernetes on AWS, CI/CD pipelines, Redis, PostgreSQL, REST APIs, React frontend.
+
+Projects:
+- Built RAG (Retrieval-Augmented Generation) pipeline with LLMs
+- Developed computer vision system for image classification
+- Deployed ML models on AWS using Docker and Kubernetes
+- Created CI/CD pipeline with GitHub Actions
+
+Experience: 10 years in software engineering, 5+ years in ML/AI

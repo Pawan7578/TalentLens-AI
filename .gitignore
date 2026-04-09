@@ -31,6 +31,11 @@ pip-delete-this-directory.txt
 .coverage
 htmlcov/
 
+# Database files — NEVER commit SQLite DBs
+*.db
+*.sqlite
+*.sqlite3
+
 # IDE
 .vscode/
 .idea/
@@ -38,11 +43,13 @@ htmlcov/
 *.swo
 *~
 .DS_Store
+Thumbs.db
 
-# Environment variables
+# Environment variable files — NEVER commit secrets
 .env
 .env.local
 .env.*.local
+.env.production
 
 # Node.js
 node_modules/
@@ -55,10 +62,6 @@ yarn-error.log*
 dist/
 build/
 
-# Uploads
-uploads/*
-!uploads/.gitkeep
-
-# OS
-.DS_Store
-Thumbs.db
+# Uploaded resume files
+backend/uploads/*
+!backend/uploads/.gitkeep
