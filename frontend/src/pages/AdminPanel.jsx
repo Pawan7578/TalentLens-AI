@@ -56,6 +56,7 @@ export default function AdminPanel() {
   const [toast, setToast] = useState(null);
   const [currentCandidateIndex, setCurrentCandidateIndex] = useState(0);
   const [viewMode, setViewMode] = useState('table'); // 'table' or 'card'
+  const [tableViewMode, setTableViewMode] = useState('data'); // 'data' or 'pivot'
   
   const [templateForm, setTemplateForm] = useState({ 
     job_role: '', 
@@ -305,6 +306,35 @@ export default function AdminPanel() {
   };
 
   const atsStats = getAtsStats();
+
+  // Generate pivot table data
+  const getPivotTableData = () => {
+    const scoreRanges = [
+      { label: 'Critical (≥80)', min: 80, max: 100, color: '#22c55e' },
+      { label: 'Promising (70-79)', min: 70, max: 79, color: '#3b82f6' },
+      { label: 'Average (60-69)', min: 60, max: 69, color: '#f59e0b' },
+      { label: 'Poor (<60)', min: 0, max: 59, color: '#ef4444' },
+    ];
+
+    const statuses = ['pending', 'selected', 'rejected'];
+    const pivotData = [];
+
+    scoreRanges.forEach(range => {
+      const row = { label: range.label, color: range.color };
+      statuses.forEach(status => {
+        const count = filtered.filter(
+          s => s.ats_score >= range.min && 
+              s.ats_score <= range.max && 
+              s.status === status
+        ).length;
+        row[status] = count;
+      });
+      row.total = statuses.reduce((sum, status) => sum + (row[status] || 0), 0);
+      pivotData.push(row);
+    });
+
+    return pivotData;
+  };
 
   const stats = {
     total: submissions.length,
@@ -788,7 +818,90 @@ export default function AdminPanel() {
         ) : error ? (
           <div className="card text-center py-10" style={{ color: '#ef4444' }}>{error}</div>
         ) : atsFilter.value === 'all' || viewMode === 'table' ? (
-          <div className="card overflow-hidden p-0 animate-slide-up">
+          <>
+            {/* Table View Toggle */}
+            {(atsFilter.value === 'all' && filtered.length > 0) && (
+              <div className="mb-4 flex gap-2 rounded-lg overflow-hidden border" style={{ borderColor: 'var(--border)', width: 'fit-content' }}>
+                <button
+                  onClick={() => setTableViewMode('data')}
+                  className="px-4 py-2 text-xs font-medium transition-colors"
+                  style={{
+                    background: tableViewMode === 'data' ? 'var(--accent)' : 'transparent',
+                    color: tableViewMode === 'data' ? '#000' : 'var(--text-muted)',
+                  }}
+                >
+                  📋 Data Table
+                </button>
+                <button
+                  onClick={() => setTableViewMode('pivot')}
+                  className="px-4 py-2 text-xs font-medium transition-colors"
+                  style={{
+                    background: tableViewMode === 'pivot' ? 'var(--accent)' : 'transparent',
+                    color: tableViewMode === 'pivot' ? '#000' : 'var(--text-muted)',
+                  }}
+                >
+                  🔄 Pivot Table
+                </button>
+              </div>
+            )}
+
+            {/* Pivot Table View */}
+            {tableViewMode === 'pivot' && (
+              <div className="card overflow-hidden p-6 animate-slide-up">
+                <h3 className="font-semibold text-lg mb-4">Candidate Distribution</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b" style={{ borderColor: 'var(--border)' }}>
+                        <th className="text-left px-4 py-3 text-xs font-medium" style={{ color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>ATS Score Range</th>
+                        <th className="text-center px-4 py-3 text-xs font-medium" style={{ color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Pending</th>
+                        <th className="text-center px-4 py-3 text-xs font-medium" style={{ color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Selected</th>
+                        <th className="text-center px-4 py-3 text-xs font-medium" style={{ color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Rejected</th>
+                        <th className="text-center px-4 py-3 text-xs font-medium" style={{ color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {getPivotTableData().map((row, idx) => (
+                        <tr key={idx} className="border-b transition-colors" style={{ borderColor: 'var(--border)' }} onMouseEnter={e => e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.02)'} onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}>
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-2">
+                              <div className="w-3 h-3 rounded" style={{ background: row.color }}></div>
+                              <span className="font-medium">{row.label}</span>
+                            </div>
+                          </td>
+                          <td className="text-center px-4 py-3">
+                            <span className="font-semibold" style={{ color: '#94a3b8' }}>{row.pending}</span>
+                          </td>
+                          <td className="text-center px-4 py-3">
+                            <span className="font-semibold" style={{ color: '#22c55e' }}>{row.selected}</span>
+                          </td>
+                          <td className="text-center px-4 py-3">
+                            <span className="font-semibold" style={{ color: '#ef4444' }}>{row.rejected}</span>
+                          </td>
+                          <td className="text-center px-4 py-3">
+                            <span className="font-bold px-3 py-1 rounded-lg" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)' }}>{row.total}</span>
+                          </td>
+                        </tr>
+                      ))}
+                      {/* Total Row */}
+                      {getPivotTableData().length > 0 && (
+                        <tr style={{ background: 'rgba(255,255,255,0.02)' }}>
+                          <td className="px-4 py-3 font-bold">Grand Total</td>
+                          <td className="text-center px-4 py-3 font-bold">{getPivotTableData().reduce((sum, row) => sum + row.pending, 0)}</td>
+                          <td className="text-center px-4 py-3 font-bold">{getPivotTableData().reduce((sum, row) => sum + row.selected, 0)}</td>
+                          <td className="text-center px-4 py-3 font-bold">{getPivotTableData().reduce((sum, row) => sum + row.rejected, 0)}</td>
+                          <td className="text-center px-4 py-3 font-bold">{filtered.length}</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Data Table View */}
+            {tableViewMode === 'data' && (
+            <div className="card overflow-hidden p-0 animate-slide-up">
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
@@ -965,7 +1078,9 @@ export default function AdminPanel() {
                 <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Showing {filtered.length} of {submissions.length} submissions</p>
               </div>
             )}
-          </div>
+            </div>
+            )}
+          </>
         ) : filtered.length === 0 ? (
           <div className="card text-center py-10" style={{ color: 'var(--text-muted)' }}>No candidates found in this filter</div>
         ) : null}
