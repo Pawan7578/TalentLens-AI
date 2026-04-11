@@ -986,7 +986,7 @@ async def analyze(
         has_projects
     )
     
-    logger.info(f"   Level Adjustment: {level_adjusted_score - int(final_score):+d}pts ({level_adjustment_reason[:80]}...)")
+    logger.info(f"   Level Adjustment: {int(level_adjusted_score - int(final_score)):+d}pts ({level_adjustment_reason[:80]}...)")
     
     # Apply all bonuses
     final_score_with_bonuses = min(100, level_adjusted_score + project_bonus)

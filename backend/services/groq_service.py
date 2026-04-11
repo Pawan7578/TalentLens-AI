@@ -239,7 +239,7 @@ async def _call_groq_chat(user_prompt: str, system_prompt: str, max_tokens: int 
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        "temperature": 0.1,
+        "temperature": 0.0,  # Deterministic scoring: critical for consistent ATS results
         "max_tokens": max_tokens,
     }
 
@@ -311,15 +311,121 @@ Candidate list:
         return _prefer_compound_skills(_local_refine_skills(candidates), limit=20)
 
 
+# -- Strict ATS Scoring System --------------------------------------------------
+
+STRICT_ATS_SYSTEM_PROMPT = """
+You are a strict ATS (Applicant Tracking System) scoring engine.
+Score the resume against the job description using this exact rubric:
+
+SCORING RUBRIC (total = 100):
+1. Keyword Match (25pts): Only count keywords explicitly required in the JD.
+   Do NOT reward resume keywords absent from JD.
+2. Role/Domain Alignment (20pts): Do the resume's domain and the JD's domain match?
+3. Skills Match (20pts): Required skills present vs missing. Partial = half points.
+4. Experience Match (20pts): 
+   - If candidate has 0 years of required experience → MAX 5pts for this category.
+   - Deduct 3pts for every missing year below the minimum.
+5. Education (10pts): Check if education meets JD requirement.
+6. Formatting/ATS-friendliness (5pts): Clean structure, standard headings.
+
+HARD RULES (enforce strictly):
+- If minimum experience requirement is NOT met → cap total score at 42.
+- If domain is completely mismatched → cap total score at 45.
+- Never give bonus points for skills not in the JD.
+- Missing must-have skills = 0 pts for that skill.
+
+Return ONLY valid JSON. No markdown outside JSON.
+"""
+
+
+async def extract_jd_keywords(jd_text: str) -> dict:
+    """Extract ONLY required keywords from the JD using Groq."""
+    extraction_prompt = f"""Extract keywords from this job description.
+Return ONLY valid JSON:
+{{
+  "must_have": ["skill1", "skill2"],
+  "good_to_have": ["skill3"],
+  "domain": "<industry>"
+}}
+
+JOB DESCRIPTION:
+{jd_text[:4000]}"""
+
+    try:
+        raw = await _call_groq_chat(
+            user_prompt=extraction_prompt,
+            system_prompt="Extract keywords. Return strict JSON only.",
+            max_tokens=600,
+        )
+        result = _parse_json_response(raw)
+        
+        # Validate structure
+        if not isinstance(result.get("must_have"), list):
+            result["must_have"] = []
+        if not isinstance(result.get("good_to_have"), list):
+            result["good_to_have"] = []
+        if not isinstance(result.get("domain"), str):
+            result["domain"] = "General"
+            
+        return result
+    except Exception as exc:
+        logger.warning(f"JD keyword extraction failed: {exc}")
+        return {"must_have": [], "good_to_have": [], "domain": "General"}
+
+
+def apply_hard_rules(result: dict, jd_info: dict) -> dict:
+    """Enforce Python-side hard caps regardless of LLM output."""
+    score = result.get("score", 0)
+    flags = result.get("flags", [])
+    
+    try:
+        breakdown = result.get("breakdown", {})
+        
+        # Rule 1: Experience hard cap
+        exp_match = breakdown.get("experience_match", {})
+        required_yrs = exp_match.get("required_years", 0)
+        candidate_yrs = exp_match.get("candidate_years", 0)
+        
+        if required_yrs > 0 and candidate_yrs == 0:
+            score = min(score, 42)
+            flags.append(f"⚠️ Hard cap: 0 of {required_yrs} required years → max 42")
+            
+        # Rule 2: Domain mismatch hard cap
+        role_align = breakdown.get("role_alignment", {})
+        role_score = role_align.get("score", 20)
+        
+        if role_score <= 5:
+            score = min(score, 45)
+            flags.append("⚠️ Hard cap: Major domain mismatch → max 45")
+        
+        result["score"] = int(score)
+        result["flags"] = flags
+        
+        # Update rating
+        if score < 40:
+            result["rating"] = "Poor"
+        elif score < 60:
+            result["rating"] = "Average"
+        elif score < 80:
+            result["rating"] = "Good"
+        else:
+            result["rating"] = "Excellent"
+            
+    except Exception as exc:
+        logger.warning(f"Error applying hard rules: {exc}")
+        
+    return result
+
+
 async def analyze_resume(resume_text: str, jd_text: str) -> dict:
     """
-    Analyze a resume against a job description using Groq with intelligent scoring.
+    Analyze a resume against a job description using strict ATS rubric.
     
-    This function uses dynamic, context-aware scoring that:
-    - Detects entry-level roles and adjusts expectations
-    - Weights skills based on JD emphasis
-    - Recognizes projects and internships as valid experience
-    - Applies semantic skill matching
+    Process:
+    1. Extract JD keywords (must_have, good_to_have, domain)
+    2. Score with strict rubric (temperature=0.0 for deterministic results)
+    3. Apply Python-side hard caps
+    4. Fallback if API unavailable
     """
     if not GROQ_API_KEY:
         logger.error("GROQ_API_KEY is missing")
@@ -332,92 +438,66 @@ async def analyze_resume(resume_text: str, jd_text: str) -> dict:
     if not resume_text.strip() or not jd_text.strip():
         return _fallback_response("Resume text or job description is empty")
 
-    # Build enhanced prompt with intelligent scoring guidance
-    user_prompt = f"""You are an ATS expert evaluator. Analyze this resume against the job description.
-
-**CRITICAL EVALUATION RULES (MUST FOLLOW):**
-
-1. **Entry-Level Detection:**
-   - If JD contains "entry-level", "entry level", "junior", "fresher", "0-1 years", "0-2 years", or "recent graduate":
-   - DO NOT penalize for <1 year full-time experience
-   - COUNT internships (even 2-3 months) as valid professional experience
-   - COUNT projects as demonstrated skills — each relevant project adds credibility
-   - A candidate with 0 years full-time but 3+ relevant projects + 6-month internship should score 80+
-
-2. **Skill Matching (Semantic Equivalence):**
-   - Match synonyms automatically (these are THE SAME skill):
-     * "LLaMA3", "Mixtral", "Gemini", "Claude API", "GPT-4" → all match "LLMs" or "LLM"
-     * "RAG pipeline", "retrieval augmented", "RAG system" → all match "RAG"
-     * "JWT", "OAuth 2.0", "authentication framework" → all match "authentication"
-     * "TensorFlow", "PyTorch", "Keras" → all match "deep learning framework"
-     * "REST API", "RESTful", "REST endpoint" → all match "REST/APIs"
-     * "React Native", "React Web" → both match "React"
-   - SCAN the ENTIRE resume for skills (not just Skills section):
-     * Check Experience descriptions
-     * Check Projects section (IMPORTANT!)
-     * Check Education & Certifications
-     * Tech stack mentioned in project descriptions
-
-3. **Scoring Formula for ANY Resume:**
-   - Base (70%): Skill matching score = (matched_weight / total_weight) × 70
-   - Bonus (+15): If projects directly demonstrate 2+ JD requirements
-   - Bonus (+10): Education match (MCA/BCA with CGPA 8.5+ OR relevant certifications)
-   - Bonus (+5): Internships present (especially for entry-level)
-   - NO PENALTY: For missing low-priority skills (Figma, Power Apps, PHP, etc.)
-   - PENALTY (-5 each): For missing HIGH-priority skills (Python, FastAPI, React, SQL, ML frameworks)
-
-4. **Project Relevance Scoring:**
-   - If resume mentions projects, check if they match JD requirements
-   - Award points for projects using JD's technical stack
-   - A full-stack project using FastAPI + React + SQL gets high relevance
-
-5. **No Hardcoding — Evaluate the Actual Fit:**
-   - Don't assume "Power Apps" is automatically low value — check if it's mentioned in JD
-   - Don't assume "PHP" is outdated — if JD asks for it, it's important
-   - Dynamically weight skills based on JD emphasis
-
-**Job Description:**
-{jd_text[:4000]}
-
-**Resume:**
-{resume_text[:4000]}
-
-**RETURN ONLY valid JSON (no markdown, no explanation, no extra text):**
-{{
-    "score": <integer 0-100>,
-    "matched_skills": ["skill1", "skill2", "skill3"],
-    "missing_skills": ["skill4", "skill5"],
-    "experience_assessment": "<1-2 lines>",
-    "project_relevance": "<high/medium/low>",
-    "education_fit": "<strong/acceptable/weak>",
-    "entry_level_adjustments": "<note if entry-level role>",
-    "reasoning": "<1-2 sentences explaining score>"
-}}"""
-
     try:
+        # Step 1: Extract JD keywords
+        jd_info = await extract_jd_keywords(jd_text)
+        logger.info(f"Extracted JD keywords: must_have={len(jd_info['must_have'])}, domain={jd_info['domain']}")
+        
+        # Step 2: Score with strict ATS rubric
+        user_prompt = f"""
+EXTRACTED JD REQUIREMENTS:
+- Must-have skills: {jd_info.get('must_have', [])}
+- Good-to-have: {jd_info.get('good_to_have', [])}
+- Domain: {jd_info.get('domain', 'General')}
+
+JOB DESCRIPTION:
+{jd_text[:5000]}
+
+RESUME:
+{resume_text[:5000]}
+
+Score strictly using the rubric. Apply all hard rules.
+
+Return JSON format:
+{{
+  "final_score": <0-100>,
+  "rating": "<Poor|Average|Good|Excellent>",
+  "breakdown": {{
+    "keyword_match": {{"score": <int>, "matched": [...], "missing": [...]}},
+    "role_alignment": {{"score": <int>, "reason": "<str>"}},
+    "skills_match": {{"score": <int>, "matched": [...], "missing": [...]}},
+    "experience_match": {{"score": <int>, "required_years": <int>, "candidate_years": <int>}},
+    "education": {{"score": <int>, "meets_requirement": <bool>}},
+    "formatting": {{"score": <int>}}
+  }},
+  "suggestions": ["..."],
+  "ai_feedback": "<2-3 sentences>"
+}}
+"""
+        
         raw = await _call_groq_chat(
             user_prompt=user_prompt,
-            system_prompt="You are a professional ATS evaluator. Score based on actual job fit, not arbitrary rules. Be fair to entry-level candidates with strong projects.",
-            max_tokens=1800,
+            system_prompt=STRICT_ATS_SYSTEM_PROMPT,
+            max_tokens=2000,
         )
         parsed = _parse_json_response(raw)
         
-        # Validate and normalize the result
-        result = _normalize_result(parsed)
+        # Ensure expected structure for hard rules
+        if "final_score" not in parsed:
+            parsed["final_score"] = parsed.get("score", 0)
+        if "breakdown" not in parsed:
+            parsed["breakdown"] = {}
+        if "flags" not in parsed:
+            parsed["flags"] = []
         
-        # Apply semantic skill matching
-        matched = _normalize_skill_items(result.get("matched_skills", []), limit=20)
-        missing = _normalize_skill_items(result.get("missing_skills", []), limit=20)
+        # Step 3: Apply Python-side hard caps
+        result = apply_hard_rules(parsed, jd_info)
         
-        # Boost score for strong entry-level candidates with projects
-        is_entry_level = parsed.get("entry_level_role", False) or "entry" in jd_text.lower()
-        has_projects = "project" in resume_text.lower()
-        
-        if is_entry_level and has_projects and result["score"] >= 60:
-            result["score"] = min(95, result["score"] + 10)
-        
-        result["matched_skills"] = matched
-        result["missing_skills"] = missing
+        # Map to legacy format for backward compatibility
+        result["score"] = result.get("final_score", 0)
+        result["matched_skills"] = result.get("breakdown", {}).get("skills_match", {}).get("matched", [])
+        result["missing_skills"] = result.get("breakdown", {}).get("skills_match", {}).get("missing", [])
+        result["suggestions"] = result.get("suggestions", [])
         
         return result
 

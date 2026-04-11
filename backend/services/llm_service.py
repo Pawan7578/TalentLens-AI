@@ -47,7 +47,48 @@ GROQ_MODELS_URL = f"{GROQ_API_URL}/openai/v1/models"
 GROQ_TIMEOUT = float(os.getenv("GROQ_TIMEOUT", "20"))
 
 
-# -- Prompt --------------------------------------------------------------------
+# -- Prompts -------------------------------------------------------------------
+SYSTEM_PROMPT = """
+You are a strict ATS (Applicant Tracking System) scoring engine.
+Score the resume against the job description using this exact rubric:
+
+SCORING RUBRIC (total = 100):
+1. Keyword Match (25pts): Only count keywords explicitly required in the JD.
+   Do NOT reward resume keywords absent from JD.
+2. Role/Domain Alignment (20pts): Do the resume's domain and the JD's domain match?
+   (e.g. Data Engineering vs SaaS/BRA = 0-3pts max)
+3. Skills Match (20pts): Required skills present vs missing. Partial = half points.
+4. Experience Match (20pts): 
+   - If candidate has 0 years of required experience → MAX 5pts for this category.
+   - Deduct 3pts for every missing year below the minimum.
+5. Education (10pts): Check if education years meet the JD requirement.
+6. Formatting/ATS-friendliness (5pts): Clean structure, standard headings.
+
+HARD RULES (enforce strictly):
+- If minimum experience requirement is NOT met → cap total score at 42.
+- If domain is completely mismatched → cap total score at 45.
+- Never give bonus points for skills not mentioned in the JD.
+- Missing must-have skills = 0 pts for that skill, no partial credit.
+
+Return ONLY valid JSON. No markdown, no explanation outside JSON.
+Format:
+{
+  "final_score": <0-100 integer>,
+  "rating": "<Poor|Average|Good|Excellent>",
+  "breakdown": {
+    "keyword_match": {"score": <int>, "max": 25, "matched": [...], "missing": [...]},
+    "role_alignment": {"score": <int>, "max": 20, "reason": "<str>"},
+    "skills_match": {"score": <int>, "max": 20, "matched": [...], "missing": [...]},
+    "experience_match": {"score": <int>, "max": 20, "required_years": <int>, "candidate_years": <int>},
+    "education": {"score": <int>, "max": 10, "meets_requirement": <bool>},
+    "formatting": {"score": <int>, "max": 5}
+  },
+  "suggestions": ["<actionable suggestion 1>", "..."],
+  "ai_feedback": "<2-3 sentence honest summary>"
+}
+"""
+
+# Legacy prompt for backward compatibility (fallback to simple scoring)
 ATS_PROMPT = """Analyze this resume against the job description.
 
 Return ONLY valid JSON (no markdown, no extra text):
@@ -267,6 +308,7 @@ def calculate_local_score(job_description: str, resume_text: str) -> dict:
 
 # -- Groq call -----------------------------------------------------------------
 def _extract_error_message(response: httpx.Response) -> str:
+    """Extract error message from Groq response."""
     try:
         payload = response.json()
     except Exception:
@@ -283,10 +325,123 @@ def _extract_error_message(response: httpx.Response) -> str:
     return str(payload)[:300]
 
 
-async def call_groq(prompt: str) -> str:
-    """Call Groq chat completion endpoint and return raw message content."""
+async def extract_jd_keywords(jd_text: str) -> dict:
+    """
+    Extract ONLY required keywords from the JD — not resume.
+    Separate into must_have, good_to_have, and domain.
+    """
+    extraction_prompt = f"""Extract keywords from this job description.
+Separate into:
+- must_have: explicitly required skills/tools/experience (non-negotiable)
+- good_to_have: preferred but not mandatory
+- domain: the job's industry/function (e.g. 'SaaS', 'Data Engineering', 'Finance')
+
+Return ONLY valid JSON. No markdown.
+
+JOB DESCRIPTION:
+{jd_text[:5000]}
+
+Return format:
+{{
+  "must_have": ["skill1", "skill2"],
+  "good_to_have": ["skill3", "skill4"],  
+  "domain": "<str>"
+}}"""
+
+    try:
+        raw = await call_groq(extraction_prompt)
+        result = parse_llm_response(raw)
+        
+        # Validate result structure
+        if not isinstance(result.get("must_have"), list):
+            result["must_have"] = []
+        if not isinstance(result.get("good_to_have"), list):
+            result["good_to_have"] = []
+        if not isinstance(result.get("domain"), str):
+            result["domain"] = "General"
+            
+        return result
+    except Exception as exc:
+        logger.warning(f"JD keyword extraction failed: {exc}")
+        # Fallback: return empty structure
+        return {"must_have": [], "good_to_have": [], "domain": "General"}
+
+
+def apply_hard_rules(result: dict, jd_info: dict) -> dict:
+    """
+    Enforce Python-side hard caps regardless of LLM output.
+    
+    Hard rules:
+    - If experience gap exists (0 years when required) → cap at 42
+    - If domain mismatch → cap at 45
+    """
+    score = result.get("final_score", 0)
+    
+    try:
+        breakdown = result.get("breakdown", {})
+        
+        # Rule 1: Experience hard cap
+        exp_match = breakdown.get("experience_match", {})
+        required_yrs = exp_match.get("required_years", 0)
+        candidate_yrs = exp_match.get("candidate_years", 0)
+        
+        flags = result.get("flags", [])
+        
+        if required_yrs > 0 and candidate_yrs == 0:
+            score = min(score, 42)
+            flags.append(f"⚠️ Hard cap (42): 0 of {required_yrs} required years")
+            
+        # Rule 2: Domain mismatch hard cap
+        role_align = breakdown.get("role_alignment", {})
+        role_score = role_align.get("score", 20)
+        
+        if role_score <= 5:
+            score = min(score, 45)
+            flags.append("⚠️ Hard cap (45): Major domain mismatch detected")
+            
+        # Rule 3: Too many missing must-have skills
+        skills = breakdown.get("skills_match", {})
+        missing = skills.get("missing", [])
+        must_have = jd_info.get("must_have", [])
+        
+        missing_must_have = [s for s in missing if any(m.lower() in s.lower() for m in must_have)]
+        if len(missing_must_have) > len(must_have) * 0.5:  # Missing >50% of must-haves
+            score = min(score, 50)
+            flags.append(f"⚠️ Missing {len(missing_must_have)}/{len(must_have)} must-have skills")
+        
+        # Update result with enforced score and flags
+        result["final_score"] = int(score)
+        result["flags"] = flags
+        
+        # Update rating based on final score
+        if score < 40:
+            result["rating"] = "Poor"
+        elif score < 60:
+            result["rating"] = "Average"
+        elif score < 80:
+            result["rating"] = "Good"
+        else:
+            result["rating"] = "Excellent"
+            
+    except Exception as exc:
+        logger.warning(f"Error applying hard rules: {exc}")
+        
+    return result
+
+
+async def call_groq(prompt: str, system_prompt: str | None = None) -> str:
+    """
+    Call Groq chat completion endpoint and return raw message content.
+    
+    Args:
+        prompt: User message/prompt text
+        system_prompt: Optional custom system prompt. Defaults to generic JSON-only directive.
+    """
     if not GROQ_API_KEY:
         raise ValueError("GROQ_API_KEY is not configured")
+
+    # Use custom system prompt if provided, otherwise generic JSON-only directive
+    system_msg = system_prompt or "Return strict JSON only. Do not include markdown."
 
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -297,14 +452,14 @@ async def call_groq(prompt: str) -> str:
         "messages": [
             {
                 "role": "system",
-                "content": "Return strict JSON only. Do not include markdown.",
+                "content": system_msg,
             },
             {
                 "role": "user",
                 "content": prompt,
             },
         ],
-        "temperature": 0.2,
+        "temperature": 0.0,  # Deterministic scoring: critical for consistent results
         "max_tokens": 1800,
         "response_format": {"type": "json_object"},
     }
@@ -398,22 +553,21 @@ def _normalize_result(candidate: dict, job_description: str, resume_text: str) -
     return merged
 
 
-async def _run_provider(provider: str, prompt: str, job_description: str, resume_text: str) -> dict:
-    if provider == "local":
-        return calculate_local_score(job_description, resume_text)
-    if provider == "groq":
-        raw = await call_groq(prompt)
-        return parse_llm_response(raw)
-    raise ValueError(f"Unknown provider: {provider}")
-
-
 # -- Public API ----------------------------------------------------------------
 async def analyze_resume(
     job_description: str,
     resume_text: str,
     provider: str | None = None,
 ) -> dict:
-    """Analyze resume text against job description text using Groq with local fallback."""
+    """
+    Analyze resume against job description using strict ATS rubric.
+    
+    Process:
+    1. Extract JD keywords (must_have, good_to_have, domain)
+    2. Score with strict rubric (temperature=0.0)
+    3. Apply Python-side hard caps
+    4. Fallback to local scoring if AI unavailable
+    """
     if not (job_description or "").strip() or not (resume_text or "").strip():
         result = calculate_local_score(job_description or "", resume_text or "")
         result["feedback"] = "Resume or job description is empty."
@@ -424,14 +578,39 @@ async def analyze_resume(
         logger.warning("Unsupported provider override '%s', using groq", selected_provider)
         selected_provider = "groq"
 
-    prompt = ATS_PROMPT.format(
-        job_description=job_description[:7000],
-        resume_text=resume_text[:7000],
-    )
-
     try:
-        raw_result = await _run_provider(selected_provider, prompt, job_description, resume_text)
-        return _normalize_result(raw_result, job_description, resume_text)
+        # Step 1: Extract JD keywords (only if using Groq)
+        if selected_provider == "groq":
+            jd_info = await extract_jd_keywords(job_description)
+        else:
+            jd_info = {"must_have": [], "good_to_have": [], "domain": "General"}
+        
+        # Step 2: Run strict ATS scoring
+        if selected_provider == "groq":
+            user_prompt = f"""
+EXTRACTED JD REQUIREMENTS:
+- Must-have keywords: {jd_info.get('must_have', [])}
+- Domain: {jd_info.get('domain', 'General')}
+
+JOB DESCRIPTION:
+{job_description[:6000]}
+
+RESUME:
+{resume_text[:6000]}
+
+Score strictly using the rubric. Apply all hard rules.
+"""
+            raw = await call_groq(user_prompt, system_prompt=SYSTEM_PROMPT)
+            raw_result = parse_llm_response(raw)
+            result = _normalize_result(raw_result, job_description, resume_text)
+        else:
+            result = calculate_local_score(job_description, resume_text)
+        
+        # Step 3: Apply Python-side hard rules
+        result = apply_hard_rules(result, jd_info)
+        
+        return result
+        
     except Exception as exc:
         logger.error("Provider '%s' failed: %s", selected_provider, exc)
         fallback = calculate_local_score(job_description, resume_text)
